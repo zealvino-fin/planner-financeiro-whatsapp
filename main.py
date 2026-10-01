@@ -8,7 +8,6 @@ from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 
-# Captura o ID da planilha e a chave da API
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1gR8Ax3SQN6rMkd8mvJaOHHpqdjwLixnTEoKk4IWMDis")
 
 def salvar_no_google_sheets(descricao, valor, categoria):
@@ -35,6 +34,27 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     sheet.append_row([data_atual, descricao, valor_formatado, categoria])
     print(f"Sucesso: Lançamento gravado na planilha -> {[data_atual, descricao, valor_formatado, categoria]}")
     return True
+
+def obter_modelo_gemini():
+    """Tenta carregar o modelo flash padrão ou descobre o modelo disponível."""
+    modelos_para_testar = [
+        'gemini-1.5-flash-001',
+        'gemini-1.5-flash-002',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro'
+    ]
+    for m in modelos_para_testar:
+        try:
+            return genai.GenerativeModel(m)
+        except Exception:
+            continue
+            
+    # Se nenhum dos modelos acima funcionar, seleciona o primeiro disponível na API
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            return genai.GenerativeModel(m.name)
+            
+    raise RuntimeError("Nenhum modelo compatível do Gemini foi encontrado para esta API Key.")
 
 @app.route("/", methods=["GET"])
 def home():
@@ -74,8 +94,8 @@ def webhook():
 
         genai.configure(api_key=api_key)
         
-        # Nome atualizado do modelo para evitar o erro 404
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        # Obtém o modelo ativo na conta
+        model = obter_modelo_gemini()
         
         prompt = (
             f"Analise o seguinte gasto financeiro enviado pelo usuário: '{texto}'. "
