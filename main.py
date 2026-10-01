@@ -15,7 +15,7 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     credentials_raw = os.environ.get("GOOGLE_CREDENTIALS")
 
     if not credentials_raw:
-        raise ValueError("A variável 'GOOGLE_CREDENTIALS' não foi configurada no Render.")
+        raise ValueError("A variável 'GOOGLE_CREDENTIALS' não está configurada no Render.")
 
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -35,26 +35,44 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     print(f"Sucesso: Lançamento gravado na planilha -> {[data_atual, descricao, valor_formatado, categoria]}")
     return True
 
-def obter_modelo_gemini():
-    """Tenta carregar o modelo flash padrão ou descobre o modelo disponível."""
-    modelos_para_testar = [
-        'gemini-1.5-flash-001',
-        'gemini-1.5-flash-002',
-        'gemini-1.5-flash',
-        'gemini-1.5-pro'
+def extrair_dados_gasto(texto, api_key):
+    """Processa o texto testando os modelos ativos até obter resposta."""
+    genai.configure(api_key=api_key)
+    
+    # Lista de modelos suportados pela API v1beta
+    modelos_candidatos = [
+        'gemini-2.0-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-1.5-pro',
+        'models/gemini-1.5-flash'
     ]
-    for m in modelos_para_testar:
+
+    prompt = (
+        f"Analise o seguinte gasto financeiro enviado pelo usuário: '{texto}'. "
+        "Retorne EXCLUSIVAMENTE um JSON válido no seguinte formato, sem formatação markdown:\n"
+        '{"descricao": "nome do item", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
+    )
+
+    resposta = None
+    ultimo_erro = None
+
+    for nome_modelo in modelos_candidatos:
         try:
-            return genai.GenerativeModel(m)
-        except Exception:
+            model = genai.GenerativeModel(nome_modelo)
+            resposta = model.generate_content(prompt)
+            if resposta and resposta.text:
+                print(f"Sucesso ao utilizar o modelo: {nome_modelo}")
+                break
+        except Exception as err:
+            ultimo_erro = err
+            print(f"Modelo {nome_modelo} falhou: {err}. Tentando o próximo...")
             continue
-            
-    # Se nenhum dos modelos acima funcionar, seleciona o primeiro disponível na API
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            return genai.GenerativeModel(m.name)
-            
-    raise RuntimeError("Nenhum modelo compatível do Gemini foi encontrado para esta API Key.")
+
+    if not resposta or not resposta.text:
+        raise RuntimeError(f"Nenhum modelo respondeu com sucesso. Último erro: {ultimo_erro}")
+
+    raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
+    return json.loads(raw_text)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -87,33 +105,19 @@ def webhook():
 
         print(f"Texto extraído para processamento: '{texto}'")
 
-        # 3. Configurar a API do Gemini
+        # 3. Validar a chave do Gemini
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
-            raise ValueError("Nenhuma chave Gemini encontrada nas variáveis de ambiente do Render.")
+            raise ValueError("Nenhuma chave Gemini encontrada em GEMINI_API_KEY ou GOOGLE_API_KEY no Render.")
 
-        genai.configure(api_key=api_key)
-        
-        # Obtém o modelo ativo na conta
-        model = obter_modelo_gemini()
-        
-        prompt = (
-            f"Analise o seguinte gasto financeiro enviado pelo usuário: '{texto}'. "
-            "Retorne EXCLUSIVAMENTE um JSON válido no seguinte formato, sem formatação de código ou texto adicional:\n"
-            '{"descricao": "nome do item/serviço", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
-        )
-
-        resposta = model.generate_content(prompt)
-        print("Resposta bruta do Gemini:", resposta.text)
-
-        raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
-        dados_gasto = json.loads(raw_text)
+        # 4. Extrair os dados via Gemini
+        dados_gasto = extrair_dados_gasto(texto, api_key)
 
         descricao = dados_gasto.get("descricao", "Outros")
         valor = float(dados_gasto.get("valor", 0.0))
         categoria = dados_gasto.get("categoria", "Outros")
 
-        # 4. Gravar na planilha do Google Sheets
+        # 5. Salvar na planilha
         salvar_no_google_sheets(descricao, valor, categoria)
 
         return jsonify({
