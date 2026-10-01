@@ -11,9 +11,7 @@ app = Flask(__name__)
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1gR8Ax3SQN6rMkd8mvJaOHHpqdjwLixnTEoKk4IWMDis")
 
 def salvar_no_google_sheets(descricao, valor, categoria):
-    """Conecta ao Google Sheets via Service Account e adiciona o gasto."""
     credentials_raw = os.environ.get("GOOGLE_CREDENTIALS")
-
     if not credentials_raw:
         raise ValueError("A variável 'GOOGLE_CREDENTIALS' não está configurada no Render.")
 
@@ -21,11 +19,9 @@ def salvar_no_google_sheets(descricao, valor, categoria):
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-
     creds_dict = json.loads(credentials_raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
-
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
     data_atual = datetime.now().strftime("%d/%m/%Y")
@@ -34,45 +30,6 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     sheet.append_row([data_atual, descricao, valor_formatado, categoria])
     print(f"Sucesso: Lançamento gravado na planilha -> {[data_atual, descricao, valor_formatado, categoria]}")
     return True
-
-def extrair_dados_gasto(texto, api_key):
-    """Processa o texto testando os modelos ativos até obter resposta."""
-    genai.configure(api_key=api_key)
-    
-    # Lista de modelos suportados pela API v1beta
-    modelos_candidatos = [
-        'gemini-2.0-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-1.5-pro',
-        'models/gemini-1.5-flash'
-    ]
-
-    prompt = (
-        f"Analise o seguinte gasto financeiro enviado pelo usuário: '{texto}'. "
-        "Retorne EXCLUSIVAMENTE um JSON válido no seguinte formato, sem formatação markdown:\n"
-        '{"descricao": "nome do item", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
-    )
-
-    resposta = None
-    ultimo_erro = None
-
-    for nome_modelo in modelos_candidatos:
-        try:
-            model = genai.GenerativeModel(nome_modelo)
-            resposta = model.generate_content(prompt)
-            if resposta and resposta.text:
-                print(f"Sucesso ao utilizar o modelo: {nome_modelo}")
-                break
-        except Exception as err:
-            ultimo_erro = err
-            print(f"Modelo {nome_modelo} falhou: {err}. Tentando o próximo...")
-            continue
-
-    if not resposta or not resposta.text:
-        raise RuntimeError(f"Nenhum modelo respondeu com sucesso. Último erro: {ultimo_erro}")
-
-    raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
-    return json.loads(raw_text)
 
 @app.route("/", methods=["GET"])
 def home():
@@ -87,12 +44,10 @@ def webhook():
         key = data.get("key", {})
         remote_jid = key.get("remoteJid", "")
 
-        # 1. Ignorar mensagens de grupos
+        # Ignora mensagens de grupos
         if remote_jid.endswith("@g.us"):
-            print("Mensagem de grupo ignorada.")
             return jsonify({"status": "ignorado", "motivo": "mensagem_de_grupo"}), 200
 
-        # 2. Extrair o texto da mensagem
         message = data.get("message", {})
         texto = (
             message.get("conversation") or
@@ -100,34 +55,43 @@ def webhook():
         )
 
         if not texto:
-            print("Nenhum texto encontrado na mensagem.")
             return jsonify({"status": "ignorado", "motivo": "sem_texto"}), 200
 
-        print(f"Texto extraído para processamento: '{texto}'")
+        print(f"Texto recebido: '{texto}'")
 
-        # 3. Validar a chave do Gemini
+        # Pega a sua chave (que começa com AQ) configurada no Render
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
-            raise ValueError("Nenhuma chave Gemini encontrada em GEMINI_API_KEY ou GOOGLE_API_KEY no Render.")
+            raise ValueError("Nenhuma chave Gemini encontrada no Render.")
 
-        # 4. Extrair os dados via Gemini
-        dados_gasto = extrair_dados_gasto(texto, api_key)
+        genai.configure(api_key=api_key)
+        
+        # AQUI ESTÁ A SOLUÇÃO: Usando o modelo exato que o Google exigiu no log
+        model = genai.GenerativeModel('gemini-3.8-flash')
+        
+        prompt = (
+            f"Analise o seguinte gasto financeiro: '{texto}'. "
+            "Retorne EXCLUSIVAMENTE um JSON válido no seguinte formato, sem formatação markdown:\n"
+            '{"descricao": "nome do item", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
+        )
+
+        resposta = model.generate_content(prompt)
+        raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
+        dados_gasto = json.loads(raw_text)
 
         descricao = dados_gasto.get("descricao", "Outros")
         valor = float(dados_gasto.get("valor", 0.0))
         categoria = dados_gasto.get("categoria", "Outros")
 
-        # 5. Salvar na planilha
         salvar_no_google_sheets(descricao, valor, categoria)
 
         return jsonify({
             "status": "sucesso",
-            "mensagem": "Lançamento gravado na planilha!",
-            "dados": {"descricao": descricao, "valor": valor, "categoria": categoria}
+            "mensagem": "Lançamento gravado na planilha!"
         }), 200
 
     except Exception as e:
-        print("Erro ao processar mensagem no webhook:", e)
+        print("Erro ao processar:", e)
         return jsonify({"status": "erro", "detalhe": str(e)}), 500
 
 if __name__ == "__main__":
