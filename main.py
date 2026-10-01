@@ -21,25 +21,23 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     credentials_raw = os.environ.get("GOOGLE_CREDENTIALS")
 
     if not credentials_raw:
-        raise ValueError("A variável 'GOOGLE_CREDENTIALS' não foi configurada ou está vazia nas variáveis do Render.")
+        raise ValueError("A variável 'GOOGLE_CREDENTIALS' não foi configurada no Render.")
 
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
 
-    # Converte o JSON em dicionário Python diretamente da memória
+    # Converte o JSON das credenciais a partir da variável
     creds_dict = json.loads(credentials_raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
 
-    # Abre a planilha pelo ID e seleciona a primeira aba
+    # Abre a planilha pelo ID
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
-    # Formata a data atual (DD/MM/AAAA)
+    # Formata data (DD/MM/AAAA) e valor com vírgula para PT-BR
     data_atual = datetime.now().strftime("%d/%m/%Y")
-
-    # Formata o valor com vírgula para manter compatibilidade com o Google Sheets no Brasil
     valor_formatado = f"{valor:.2f}".replace('.', ',')
 
     # Insere a nova linha: [Data, Descrição, Valor, Categoria]
@@ -80,26 +78,21 @@ def webhook():
 
         print(f"Texto extraído para processamento: '{texto}'")
 
-        # 3. Processar com o Gemini (forçando saída em JSON)
-        generation_config = {
-            "response_mime_type": "application/json"
-        }
-        model = genai.GenerativeModel(
-            'gemini-1.5-flash',
-            generation_config=generation_config
-        )
+        # 3. Processar com o Gemini sem parâmetros incompatíveis
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = (
             f"Analise o seguinte gasto financeiro: '{texto}'. "
-            "Extraia os dados e responda em formato JSON com o seguinte esquema:\n"
-            '{"descricao": "nome do item ou serviço", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
+            "Retorne APENAS um JSON válido exatamente neste formato, sem marcações markdown ou qualquer texto adicional:\n"
+            '{"descricao": "nome do item", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
         )
 
         resposta = model.generate_content(prompt)
-        print("Resposta do Gemini:", resposta.text)
+        print("Resposta bruta do Gemini:", resposta.text)
 
-        # Converte a resposta estruturada para dicionário Python
-        dados_gasto = json.loads(resposta.text)
+        # Limpa possíveis formatações markdown do Gemini
+        raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
+        dados_gasto = json.loads(raw_text)
 
         descricao = dados_gasto.get("descricao", "Outros")
         valor = float(dados_gasto.get("valor", 0.0))
