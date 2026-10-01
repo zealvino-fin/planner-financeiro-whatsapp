@@ -28,7 +28,7 @@ def salvar_no_google_sheets(descricao, valor, categoria):
         "https://www.googleapis.com/auth/drive"
     ]
 
-    # Converte o JSON das credenciais a partir da variável
+    # Converte o JSON das credenciais a partir da variável de ambiente
     creds_dict = json.loads(credentials_raw)
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
@@ -36,7 +36,7 @@ def salvar_no_google_sheets(descricao, valor, categoria):
     # Abre a planilha pelo ID
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
-    # Formata data (DD/MM/AAAA) e valor com vírgula para PT-BR
+    # Formata a data (DD/MM/AAAA) e o valor com vírgula (padrão Brasil)
     data_atual = datetime.now().strftime("%d/%m/%Y")
     valor_formatado = f"{valor:.2f}".replace('.', ',')
 
@@ -78,19 +78,19 @@ def webhook():
 
         print(f"Texto extraído para processamento: '{texto}'")
 
-        # 3. Processar com o Gemini sem parâmetros incompatíveis
+        # 3. Processar com o Gemini
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = (
             f"Analise o seguinte gasto financeiro: '{texto}'. "
-            "Retorne APENAS um JSON válido exatamente neste formato, sem marcações markdown ou qualquer texto adicional:\n"
+            "Retorne APENAS um JSON válido exatamente neste formato, sem marcações markdown ou texto extra:\n"
             '{"descricao": "nome do item", "valor": 00.00, "categoria": "Alimentação|Saúde|Transporte|Lazer|Moradia|Outros"}'
         )
 
         resposta = model.generate_content(prompt)
         print("Resposta bruta do Gemini:", resposta.text)
 
-        # Limpa possíveis formatações markdown do Gemini
+        # Limpa eventuais marcações de código (```json ... ```)
         raw_text = resposta.text.replace("```json", "").replace("```", "").strip()
         dados_gasto = json.loads(raw_text)
 
